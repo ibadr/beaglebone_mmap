@@ -1,1 +1,9 @@
-The above code contains a header file, beaglebone_gpio.h and a source file gpi.c Just compile the gpi.c on your beaglebone using gcc, and run it. Make sure you have first exported pin P9_12 as a GPIO using an appropriate device tree overlay
+# RT PREEMPT and GPIO
+This little example attempts to toggle a GPIO at a preset frequency in real-time. It assumes the running Linux kernel is compiled with full RT PREEMPT support. It uses the MRAA library for controlling the GPIO pin.
+
+# Build
+gcc ./gpi.c -lmraa -o gpi
+
+# Run
+sudo ./gpi
+

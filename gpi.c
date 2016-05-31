@@ -1,9 +1,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/mman.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include "beaglebone_gpio.h"
+
+// From mraa example
+#include <unistd.h>
+#include <errno.h>
+#include <signal.h>
+#include <mraa.h>
+#define DEFAULT_IOPIN 58
+int running = 0;
+static int iopin;
 
 // RT PREEMPT HOWTO WIKI
 //   https://rt.wiki.kernel.org/index.php/RT_PREEMPT_HOWTO#A_Realtime_.22Hello_World.22_Example
@@ -19,55 +25,58 @@ void stack_prefault(void) {
   return;
 }
 
-int main(int argc, char *argv[]) {
-  volatile void *gpio_addr = NULL;
-  volatile unsigned int *gpio_oe_addr = NULL;
-  volatile unsigned int *gpio_setdataout_addr = NULL;
-  volatile unsigned int *gpio_cleardataout_addr = NULL;
-  unsigned int reg;
-
-  unsigned int i=0;
-  struct timespec t;
-  struct sched_param param;
-  int interval = 50000; /* 50us*/
-
-  param.sched_priority = MY_PRIORITY;
-  if(sched_setscheduler(0, SCHED_FIFO, &param) == -1) {
-    perror("sched_setscheduler failed");
-    exit(-1);
-  }
-
-
-  int fd = open("/dev/mem", O_RDWR);
-
-  printf("Mapping %X - %X (size: %X)\n", GPIO1_START_ADDR,
-  GPIO1_END_ADDR, GPIO1_SIZE);
-
-  gpio_addr = mmap(0, GPIO1_SIZE, PROT_READ | PROT_WRITE,
-    MAP_SHARED, fd, GPIO1_START_ADDR);
-
-    gpio_oe_addr = gpio_addr + GPIO_OE;
-    gpio_setdataout_addr = gpio_addr + GPIO_SETDATAOUT;
-    gpio_cleardataout_addr = gpio_addr + GPIO_CLEARDATAOUT;
-
-    if(gpio_addr == MAP_FAILED) {
-      printf("Unable to map GPIO\n");
-      exit(1);
+void sig_handler(int signo)
+{
+    if (signo == SIGINT) {
+        printf("closing IO%d nicely\n", iopin);
+        running = -1;
     }
-    printf("GPIO mapped to %p\n", gpio_addr);
-    printf("GPIO OE mapped to %p\n", gpio_oe_addr);
-    printf("GPIO SETDATAOUTADDR mapped to %p\n",
-    gpio_setdataout_addr);
-    printf("GPIO CLEARDATAOUT mapped to %p\n",
-    gpio_cleardataout_addr);
+}
 
-    reg = *gpio_oe_addr;
-    printf("GPIO1 configuration: %X\n", reg);
-    reg = reg & (0xFFFFFFFF - PIN);
-    *gpio_oe_addr = reg;
-    printf("GPIO1 configuration: %X\n", reg);
+int main(int argc, char *argv[]) {
 
+    unsigned int i=0;
+    struct timespec t;
+    struct sched_param param;
+    int interval = 1000000; /* 1000us*/
 
+    param.sched_priority = MY_PRIORITY;
+    if(sched_setscheduler(0, SCHED_FIFO, &param) == -1) {
+      perror("sched_setscheduler failed");
+      exit(-1);
+    }
+
+    mraa_result_t r = MRAA_SUCCESS;
+    iopin = DEFAULT_IOPIN;
+
+    if (argc < 2) {
+        printf("Provide an int arg if you want to flash on something other than %d\n", DEFAULT_IOPIN);
+    } else {
+        iopin = strtol(argv[1], NULL, 10);
+    }
+
+    mraa_init();
+    fprintf(stdout, "MRAA Version: %s\nStarting Blinking on IO%d\n", mraa_get_version(), iopin);
+
+    // Setting MRAA priority fails for some reason (returns 0 instead of the set priority)
+    //int p_ret=mraa_set_priority(MY_PRIORITY);
+    //fprintf(stdout, "MRAA Set Priority %d\n", p_ret);
+
+    mraa_gpio_context gpio;
+    gpio = mraa_gpio_init(iopin);
+    if (gpio == NULL) {
+        fprintf(stderr, "Are you sure that pin%d you requested is valid on your platform?", iopin);
+        exit(1);
+    }
+    printf("Initialised pin%d\n", iopin);
+
+    // set direction to OUT
+    r = mraa_gpio_dir(gpio, MRAA_GPIO_OUT);
+    if (r != MRAA_SUCCESS) {
+        mraa_result_print(r);
+    }
+
+    signal(SIGINT, sig_handler);
 
     /* Lock memory */
 
@@ -85,13 +94,13 @@ int main(int argc, char *argv[]) {
     t.tv_sec++;
 
     printf("Start toggling PIN \n");
-    while(1) {
+    while(running==0) {
       /* wait until next shot */
       clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &t, NULL);
 
       i++;
-      if(i%2) {*gpio_setdataout_addr= PIN;}
-      else {*gpio_cleardataout_addr = PIN;}
+      if(i%2) {r = mraa_gpio_write(gpio, 1);}
+      else {r = mraa_gpio_write(gpio, 0);}
 
       /* calculate next shot */
       t.tv_nsec += interval;
@@ -102,6 +111,10 @@ int main(int argc, char *argv[]) {
       }
     }
 
-    close(fd);
-    return 0;
+    r = mraa_gpio_close(gpio);
+    if (r != MRAA_SUCCESS) {
+        mraa_result_print(r);
+    }
+
+    return r;
   }
